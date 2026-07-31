@@ -94,7 +94,11 @@ class ConfigRepository(private val context: Context) {
         var cursor: Cursor? = null
         return try {
             cursor = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
-            if (cursor?.moveToFirst() == true) cursor.getString(0) else "config.yaml"
+            if (cursor?.moveToFirst() == true && !cursor.isNull(0)) {
+                cursor.getString(0)?.takeIf(String::isNotBlank) ?: "config.yaml"
+            } else {
+                uri.lastPathSegment?.substringAfterLast('/') ?: "config.yaml"
+            }
         } catch (_: Exception) {
             uri.lastPathSegment?.substringAfterLast('/') ?: "config.yaml"
         } finally {

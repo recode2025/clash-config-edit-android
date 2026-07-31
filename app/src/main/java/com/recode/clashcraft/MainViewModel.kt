@@ -306,6 +306,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun Throwable.userMessage(): String = message?.takeIf(String::isNotBlank) ?: "操作失败"
+    private fun Throwable.userMessage(): String {
+        var current: Throwable? = this
+        while (current != null) {
+            current.message?.takeIf(String::isNotBlank)?.let { return it }
+            current = current.cause
+        }
+        return "操作失败（${javaClass.simpleName}）"
+    }
 
 }
