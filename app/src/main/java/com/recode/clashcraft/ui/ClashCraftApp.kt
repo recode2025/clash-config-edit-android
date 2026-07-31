@@ -1,10 +1,5 @@
 package com.recode.clashcraft.ui
 
-import android.graphics.Typeface
-import android.text.InputType
-import android.text.TextWatcher
-import android.widget.EditText
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -15,15 +10,20 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -53,29 +53,28 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
 import com.recode.clashcraft.MainViewModel
 import com.recode.clashcraft.data.ConfigSummary
+import com.recode.clashcraft.data.CustomRuleRequest
 import com.recode.clashcraft.data.EditorState
 import com.recode.clashcraft.data.GroupInfo
+import com.recode.clashcraft.data.RuleAddResult
 import com.recode.clashcraft.data.RuleWizardRequest
 import com.recode.clashcraft.ui.theme.ClashCraftTheme
+import kotlinx.coroutines.launch
 
 private enum class AppPage(val title: String, val mark: String) {
     OVERVIEW("概览", "◫"),
-    EDITOR("编辑", "≡"),
-    WIZARD("规则向导", "⌁"),
+    CONFIG("配置", "☷"),
+    WIZARD("分流规则", "⌕"),
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -83,12 +82,21 @@ private enum class AppPage(val title: String, val mark: String) {
 fun ClashCraftApp(
     viewModel: MainViewModel,
     onOpen: () -> Unit,
+    onImportClashMi: () -> Unit,
     onSaveAs: (String) -> Unit,
     onSaveAndShare: (String) -> Unit,
 ) {
     val state by viewModel.state.collectAsState()
     var page by rememberSaveable { mutableStateOf(AppPage.OVERVIEW) }
     val snackbar = remember { SnackbarHostState() }
+
+    if (state.pendingImports.isNotEmpty()) {
+        ImportProfileDialog(
+            profiles = state.pendingImports.map { it.displayName },
+            onSelect = viewModel::selectImportedProfile,
+            onDismiss = viewModel::dismissImportedProfiles,
+        )
+    }
 
     LaunchedEffect(state.message) {
         state.message?.let {
@@ -143,17 +151,30 @@ fun ClashCraftApp(
             Box(Modifier.fillMaxSize().padding(padding)) {
                 when {
                     state.isBusy -> LoadingView()
-                    state.text.isBlank() -> WelcomeView(onOpen)
+                    state.text.isBlank() -> WelcomeView(onOpen, onImportClashMi)
                     page == AppPage.OVERVIEW -> OverviewView(
                         state = state,
                         onValidate = viewModel::validate,
                         onSaveAndShare = { onSaveAndShare(state.fileName) },
                     )
-                    page == AppPage.EDITOR -> EditorView(state, viewModel::updateText, viewModel::validate)
+                    page == AppPage.CONFIG -> ConfigGuiEditor(
+                        root = state.root,
+                        actions = ConfigEditorActions(
+                            setValue = viewModel::setConfigValue,
+                            remove = viewModel::removeConfigValue,
+                            renameKey = viewModel::renameConfigKey,
+                            addMapEntry = viewModel::addConfigMapEntry,
+                            addListItem = viewModel::addConfigListItem,
+                            moveListItem = viewModel::moveConfigListItem,
+                        ),
+                        modifier = Modifier.fillMaxSize(),
+                    )
                     else -> RuleWizardView(
                         state = state,
+                        onAddCustomRule = viewModel::addCustomRule,
+                        onRemoveRule = viewModel::removeRule,
                         onApply = {
-                            if (viewModel.applyWizard(it)) page = AppPage.EDITOR
+                            viewModel.applyWizard(it) { page = AppPage.CONFIG }
                         },
                     )
                 }
@@ -174,26 +195,29 @@ private fun LoadingView() {
 }
 
 @Composable
-private fun WelcomeView(onOpen: () -> Unit) {
+private fun WelcomeView(onOpen: () -> Unit, onImportClashMi: () -> Unit) {
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(18.dp),
     ) {
         Spacer(Modifier.height(12.dp))
-        Text("安全地修改完整 YAML", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
+        Text("用 GUI 修改完整配置", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
         Text(
-            "从 ClashMi、Clash for Android、Mihomo Party 等客户端导出或分享配置到这里。应用不会申请全盘存储权限，也不会上传配置。",
+            "无需编辑 YAML 文本。导入后按分区修改开关、端口、DNS、TUN、节点、代理组、规则以及任意扩展字段。",
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Button(onClick = onOpen, modifier = Modifier.fillMaxWidth()) { Text("选择 YAML 配置文件") }
+        Button(onClick = onOpen, modifier = Modifier.fillMaxWidth()) { Text("打开 YAML 配置") }
+        OutlinedButton(onClick = onImportClashMi, modifier = Modifier.fillMaxWidth()) {
+            Text("导入 ClashMi 备份 ZIP")
+        }
         InfoCard(
-            title = "支持全部配置项",
-            body = "原始 YAML 编辑器不会限制键名；常用项提供结构化概览，未来新增字段也能保留。规则向导会校验 YAML 后再修改。",
+            title = "ClashMi 正确导入方式",
+            body = "在 ClashMi 打开“设置 → 备份与同步 → 导出”，然后分享到本应用；也可以保存 backup.zip 后点击上面的按钮。应用会列出备份里的全部配置。",
         )
         InfoCard(
-            title = "直接读取的边界",
-            body = "Android 不允许普通应用读取其他 App 的私有目录。请在原客户端中导出/分享配置，或用系统文件选择器授权包含配置的目录。",
+            title = "为什么文件选择器里看不到",
+            body = "ClashMi 把 profiles 配置放在 Android 私有应用目录，系统禁止其他普通应用直接浏览。导出的备份 ZIP 是无需 root 的可靠入口。",
         )
         InfoCard(
             title = "自动优选线路",
@@ -302,9 +326,9 @@ private fun ValidationBanner(error: String?, onValidate: () -> Unit) {
         modifier = Modifier.fillMaxWidth().clickable(onClick = onValidate),
     ) {
         Column(Modifier.padding(14.dp)) {
-            Text(if (isError) "YAML 需要修正" else "YAML 结构有效", fontWeight = FontWeight.SemiBold)
+            Text(if (isError) "配置结构需要修正" else "配置结构有效", fontWeight = FontWeight.SemiBold)
             Text(
-                error ?: "点击重新校验；保存前也会自动校验。",
+                error ?: "GUI 修改会实时更新结构；保存前也会自动校验。",
                 style = MaterialTheme.typography.bodySmall,
             )
         }
@@ -312,63 +336,40 @@ private fun ValidationBanner(error: String?, onValidate: () -> Unit) {
 }
 
 @Composable
-private fun EditorView(state: EditorState, onTextChanged: (String) -> Unit, onValidate: () -> Unit) {
-    Column(Modifier.fillMaxSize()) {
-        ValidationBanner(state.parseError, onValidate)
-        YamlEditText(
-            value = state.text,
-            onValueChange = onTextChanged,
-            modifier = Modifier.fillMaxWidth().weight(1f),
-        )
-    }
-}
-
-@Composable
-private fun YamlEditText(value: String, onValueChange: (String) -> Unit, modifier: Modifier = Modifier) {
-    val context = LocalContext.current
-    val textColor = MaterialTheme.colorScheme.onSurface.toArgb()
-    val backgroundColor = MaterialTheme.colorScheme.surface.toArgb()
-    val latestCallback by rememberUpdatedState(onValueChange)
-
-    AndroidView(
-        modifier = modifier.background(Color(backgroundColor)),
-        factory = {
-            EditText(context).apply {
-                setText(value)
-                setSelection(value.length)
-                typeface = Typeface.MONOSPACE
-                textSize = 13.5f
-                setTextColor(textColor)
-                setBackgroundColor(backgroundColor)
-                setPadding(18, 14, 18, 24)
-                gravity = android.view.Gravity.TOP or android.view.Gravity.START
-                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or
-                    InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-                setHorizontallyScrolling(true)
-                isVerticalScrollBarEnabled = true
-                addTextChangedListener(object : TextWatcher {
-                    override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
-                    override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                        latestCallback(s?.toString().orEmpty())
+private fun ImportProfileDialog(
+    profiles: List<String>,
+    onSelect: (Int) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("选择 ClashMi 配置") },
+        text = {
+            LazyColumn(Modifier.fillMaxWidth().heightIn(max = 420.dp)) {
+                itemsIndexed(profiles) { index, name ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth().clickable { onSelect(index) }.padding(vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(name, modifier = Modifier.weight(1f))
+                        Text("导入", color = MaterialTheme.colorScheme.primary)
                     }
-                    override fun afterTextChanged(s: android.text.Editable?) = Unit
-                })
+                    if (index != profiles.lastIndex) androidx.compose.material3.HorizontalDivider()
+                }
             }
         },
-        update = { editor ->
-            editor.setTextColor(textColor)
-            editor.setBackgroundColor(backgroundColor)
-            if (editor.text.toString() != value) {
-                val cursor = editor.selectionStart.coerceAtLeast(0).coerceAtMost(value.length)
-                editor.setText(value)
-                editor.setSelection(cursor)
-            }
-        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
 }
 
 @Composable
-private fun RuleWizardView(state: EditorState, onApply: (RuleWizardRequest) -> Unit) {
+private fun RuleWizardView(
+    state: EditorState,
+    onAddCustomRule: (CustomRuleRequest) -> RuleAddResult,
+    onRemoveRule: (Int) -> Unit,
+    onApply: (RuleWizardRequest) -> Unit,
+) {
     val groups = state.summary.groups
     var packageNames by rememberSaveable { mutableStateOf("") }
     var domains by rememberSaveable { mutableStateOf("") }
@@ -382,9 +383,24 @@ private fun RuleWizardView(state: EditorState, onApply: (RuleWizardRequest) -> U
     var tolerance by rememberSaveable { mutableStateOf("80") }
     var forceProcessLookup by rememberSaveable { mutableStateOf(true) }
     var menuOpen by remember { mutableStateOf(false) }
+    var ruleSearch by rememberSaveable { mutableStateOf("") }
+    var ruleStatus by rememberSaveable { mutableStateOf<String?>(null) }
+    var showCustomRuleDialog by rememberSaveable { mutableStateOf(false) }
+    var visibleRuleLimit by rememberSaveable { mutableStateOf(100) }
     val selected = remember { mutableStateListOf<String>() }
+    val listState = rememberLazyListState()
+    val coroutineScope = rememberCoroutineScope()
     val parent = groups.firstOrNull { it.name == parentName }
     val candidates = parent?.proxies.orEmpty().filterNot { it in setOf("DIRECT", "REJECT", "COMPATIBLE") }
+    val rules = state.root["rules"] as? List<*> ?: emptyList<Any?>()
+    val filteredRules = remember(rules, ruleSearch, visibleRuleLimit) {
+        val query = ruleSearch.trim()
+        rules.asSequence()
+            .mapIndexed { index, value -> index to value.toString() }
+            .filter { query.isEmpty() || it.second.contains(query, ignoreCase = true) }
+            .take(visibleRuleLimit)
+            .toList()
+    }
 
     LaunchedEffect(groups) {
         if (groups.none { it.name == parentName }) parentName = groups.firstOrNull()?.name.orEmpty()
@@ -395,11 +411,76 @@ private fun RuleWizardView(state: EditorState, onApply: (RuleWizardRequest) -> U
     }
 
     LazyColumn(
+        state = listState,
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(18.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         item {
+            Text("分流规则", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+            Text(
+                "搜索现有规则，或按类型、匹配内容和策略组添加自定义分流。新规则会自动插入 MATCH 之前。",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = ruleSearch,
+                    onValueChange = {
+                        ruleSearch = it
+                        visibleRuleLimit = 100
+                        ruleStatus = null
+                    },
+                    label = { Text("搜索分流规则") },
+                    supportingText = { Text("可搜索域名、包名、规则类型或策略组") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                )
+                Button(onClick = { showCustomRuleDialog = true }, modifier = Modifier.fillMaxWidth()) {
+                    Text("添加自定义分流规则")
+                }
+                ruleStatus?.let {
+                    Text(it, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodySmall)
+                }
+                Text(
+                    if (ruleSearch.isBlank()) "共 ${rules.size} 条，当前显示 ${filteredRules.size} 条"
+                    else "找到 ${filteredRules.size} 条匹配结果",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        if (filteredRules.isEmpty()) {
+            item { InfoCard("没有匹配规则", if (rules.isEmpty()) "当前配置还没有 rules。" else "请更换搜索关键词。") }
+        } else {
+            items(filteredRules, key = { "${it.first}:${it.second}" }) { (originalIndex, rule) ->
+                OutlinedCard(Modifier.fillMaxWidth()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("第 ${originalIndex + 1} 条", style = MaterialTheme.typography.labelMedium)
+                            Text(rule, style = MaterialTheme.typography.bodyMedium)
+                        }
+                        TextButton(onClick = { onRemoveRule(originalIndex) }) {
+                            Text("删除", color = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                }
+            }
+        }
+        if (ruleSearch.isBlank() && filteredRules.size < rules.size) {
+            item {
+                OutlinedButton(
+                    onClick = { visibleRuleLimit += 100 },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("再显示 ${minOf(100, rules.size - filteredRules.size)} 条") }
+            }
+        }
+        item {
+            androidx.compose.material3.HorizontalDivider()
             Text("应用专属自动线路", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
             Text(
                 "包名规则只匹配该 App 的连接；域名补充规则会全局匹配同一域名，请谨慎填写。",
@@ -602,6 +683,176 @@ private fun RuleWizardView(state: EditorState, onApply: (RuleWizardRequest) -> U
         }
         item { Spacer(Modifier.height(18.dp)) }
     }
+
+    if (showCustomRuleDialog) {
+        CustomRuleDialog(
+            groups = groups.map { it.name },
+            onDismiss = { showCustomRuleDialog = false },
+            onConfirm = { request ->
+                val result = onAddCustomRule(request)
+                ruleSearch = result.rule
+                visibleRuleLimit = 100
+                ruleStatus = if (result.existed) {
+                    "规则已存在，已定位到第 ${result.index + 1} 条"
+                } else {
+                    "已添加并定位到第 ${result.index + 1} 条"
+                }
+                showCustomRuleDialog = false
+                coroutineScope.launch { listState.animateScrollToItem(2) }
+            },
+        )
+    }
+}
+
+@Composable
+private fun CustomRuleDialog(
+    groups: List<String>,
+    onDismiss: () -> Unit,
+    onConfirm: (CustomRuleRequest) -> Unit,
+) {
+    var type by rememberSaveable { mutableStateOf("DOMAIN-SUFFIX") }
+    var customType by rememberSaveable { mutableStateOf("") }
+    var payload by rememberSaveable { mutableStateOf("") }
+    var target by rememberSaveable { mutableStateOf(groups.firstOrNull() ?: "DIRECT") }
+    var noResolve by rememberSaveable { mutableStateOf(false) }
+    var typeMenu by remember { mutableStateOf(false) }
+    var targetMenu by remember { mutableStateOf(false) }
+    val targets = remember(groups) { (groups + listOf("DIRECT", "REJECT")).distinct() }
+    val effectiveType = if (type == CUSTOM_RULE_TYPE) customType.trim().uppercase() else type
+    val acceptsNoResolve = effectiveType in setOf("GEOIP", "IP-CIDR", "IP-CIDR6", "SRC-IP-CIDR")
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("添加自定义分流规则") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column {
+                    Text("规则类型", style = MaterialTheme.typography.labelLarge)
+                    Box {
+                        OutlinedButton(onClick = { typeMenu = true }, modifier = Modifier.fillMaxWidth()) {
+                            Text(type, modifier = Modifier.weight(1f))
+                            Text("▾")
+                        }
+                        DropdownMenu(expanded = typeMenu, onDismissRequest = { typeMenu = false }) {
+                            CUSTOM_RULE_TYPES.forEach { option ->
+                                DropdownMenuItem(
+                                    text = { Text(option) },
+                                    onClick = {
+                                        type = option
+                                        if (option == "MATCH") payload = ""
+                                        typeMenu = false
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
+                if (type == CUSTOM_RULE_TYPE) {
+                    OutlinedTextField(
+                        value = customType,
+                        onValueChange = { customType = it.uppercase() },
+                        label = { Text("自定义规则类型") },
+                        supportingText = { Text("例：DOMAIN-REGEX、SUB-RULE") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                    )
+                }
+                if (effectiveType != "MATCH") {
+                    OutlinedTextField(
+                        value = payload,
+                        onValueChange = { payload = it },
+                        label = { Text(customRulePayloadLabel(effectiveType)) },
+                        supportingText = { Text(customRulePayloadHint(effectiveType)) },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                    )
+                }
+                Column {
+                    Text("目标策略组", style = MaterialTheme.typography.labelLarge)
+                    Box {
+                        OutlinedButton(onClick = { targetMenu = true }, modifier = Modifier.fillMaxWidth()) {
+                            Text(target, modifier = Modifier.weight(1f))
+                            Text("▾")
+                        }
+                        DropdownMenu(expanded = targetMenu, onDismissRequest = { targetMenu = false }) {
+                            targets.forEach { option ->
+                                DropdownMenuItem(
+                                    text = { Text(option) },
+                                    onClick = { target = option; targetMenu = false },
+                                )
+                            }
+                        }
+                    }
+                }
+                if (acceptsNoResolve) {
+                    SettingSwitch(
+                        title = "不触发 DNS 解析",
+                        subtitle = "在规则末尾添加 no-resolve",
+                        checked = noResolve,
+                        onCheckedChange = { noResolve = it },
+                    )
+                }
+                Text(
+                    if (effectiveType == "MATCH") "$effectiveType,$target"
+                    else "${effectiveType.ifBlank { "<规则类型>" }},${payload.ifBlank { "<匹配内容>" }},$target${if (noResolve && acceptsNoResolve) ",no-resolve" else ""}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onConfirm(CustomRuleRequest(effectiveType, payload, target, noResolve && acceptsNoResolve)) },
+                enabled = effectiveType.isNotBlank() && target.isNotBlank() &&
+                    (effectiveType == "MATCH" || payload.isNotBlank()),
+            ) { Text("添加") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
+}
+
+private val CUSTOM_RULE_TYPES = listOf(
+    "DOMAIN",
+    "DOMAIN-SUFFIX",
+    "DOMAIN-KEYWORD",
+    "GEOSITE",
+    "GEOIP",
+    "IP-CIDR",
+    "IP-CIDR6",
+    "SRC-IP-CIDR",
+    "SRC-PORT",
+    "DST-PORT",
+    "PROCESS-NAME",
+    "PROCESS-PATH",
+    "RULE-SET",
+    "NETWORK",
+    "UID",
+    "IN-TYPE",
+    "DOMAIN-REGEX",
+    "SUB-RULE",
+    "MATCH",
+    CUSTOM_RULE_TYPE,
+)
+
+private const val CUSTOM_RULE_TYPE = "自定义类型…"
+
+private fun customRulePayloadLabel(type: String): String = when (type) {
+    "DOMAIN", "DOMAIN-SUFFIX", "DOMAIN-KEYWORD" -> "域名或关键词"
+    "PROCESS-NAME", "PROCESS-PATH" -> "包名、进程名或路径"
+    "IP-CIDR", "IP-CIDR6", "SRC-IP-CIDR" -> "CIDR 地址段"
+    "SRC-PORT", "DST-PORT" -> "端口或端口范围"
+    "RULE-SET" -> "规则提供者名称"
+    "GEOSITE", "GEOIP" -> "Geo 数据标签"
+    else -> "匹配内容"
+}
+
+private fun customRulePayloadHint(type: String): String = when (type) {
+    "DOMAIN-SUFFIX" -> "例：telegram.org"
+    "PROCESS-NAME" -> "Android 可填写包名，例如 org.telegram.messenger"
+    "IP-CIDR" -> "例：192.168.0.0/16"
+    "DST-PORT" -> "例：443 或 8000-9000"
+    "RULE-SET" -> "例：reject 或 private"
+    else -> "填写该规则类型需要匹配的值"
 }
 
 @Composable

@@ -51,6 +51,9 @@ class MainActivity : ComponentActivity() {
                         arrayOf("application/yaml", "text/yaml", "text/x-yaml", "text/plain", "application/octet-stream"),
                     )
                 },
+                onImportClashMi = {
+                    openDocument.launch(arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream"))
+                },
                 onSaveAs = { suggestedName -> createDocument.launch(suggestedName.withYamlExtension()) },
                 onSaveAndShare = { suggestedName ->
                     if (viewModel.state.value.uri == null) {
@@ -65,6 +68,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        setIntent(intent)
         consumeIncomingIntent(intent)
     }
 
@@ -79,7 +83,14 @@ class MainActivity : ComponentActivity() {
             } ?: intent.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.uri
             else -> null
         }
-        uri?.let(viewModel::open)
+        if (uri != null) {
+            viewModel.open(uri)
+        } else if (intent?.action == Intent.ACTION_SEND) {
+            intent.getCharSequenceExtra(Intent.EXTRA_TEXT)
+                ?.toString()
+                ?.takeIf(String::isNotBlank)
+                ?.let(viewModel::openSharedText)
+        }
     }
 
     private fun openInClash(request: ClashShareRequest) {

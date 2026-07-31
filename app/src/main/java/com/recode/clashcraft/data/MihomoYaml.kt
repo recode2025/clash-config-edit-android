@@ -10,9 +10,9 @@ object MihomoYaml {
         require(text.isNotBlank()) { "配置内容为空" }
         val options = LoaderOptions().apply {
             isAllowDuplicateKeys = false
-            maxAliasesForCollections = 50
-            codePointLimit = 16 * 1024 * 1024
-            nestingDepthLimit = 100
+            maxAliasesForCollections = 500
+            codePointLimit = 64 * 1024 * 1024
+            nestingDepthLimit = 200
         }
         val loaded = Yaml(SafeConstructor(options)).load<Any?>(text)
             ?: error("配置内容为空")
