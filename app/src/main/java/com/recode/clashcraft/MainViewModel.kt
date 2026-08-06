@@ -13,7 +13,9 @@ import com.recode.clashcraft.data.CustomRuleRequest
 import com.recode.clashcraft.data.CustomRuleManager
 import com.recode.clashcraft.data.EditorState
 import com.recode.clashcraft.data.ImportedProfile
+import com.recode.clashcraft.data.LockedRulesStore
 import com.recode.clashcraft.data.MihomoYaml
+import com.recode.clashcraft.data.RuleFilter
 import com.recode.clashcraft.data.RuleWizard
 import com.recode.clashcraft.data.RuleAddResult
 import com.recode.clashcraft.data.RuleWizardRequest
@@ -32,6 +34,8 @@ import kotlinx.coroutines.withContext
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = ConfigRepository(application)
+    private val lockedStore = LockedRulesStore(application)
+    private var configKey: String? = null
     private val _state = MutableStateFlow(EditorState())
     val state: StateFlow<EditorState> = _state.asStateFlow()
     private val _shareRequests = MutableSharedFlow<ClashShareRequest>(extraBufferCapacity = 1)
@@ -129,6 +133,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         removeConfigValue(ConfigPath.Root.key("rules").index(index))
     }
 
+    fun toggleRuleLock(rule: String) {
+        val key = configKey ?: return
+        val updated = lockedStore.toggle(key, rule)
+        _state.update { it.copy(lockedRules = updated) }
+    }
+
+    fun deleteUnlockedRules() {
+        val key = configKey
+        val current = _state.value
+        val rules = (current.root["rules"] as? List<*>) ?: emptyList<Any?>()
+        if (rules.isEmpty()) {
+            _state.update { it.copy(message = "当前配置没有规则") }
+            return
+        }
+        val kept = RuleFilter.keepLocked(rules, current.lockedRules)
+        if (kept.size == rules.size) {
+            _state.update { it.copy(message = "没有未上锁规则可删除") }
+            return
+        }
+        val updatedRoot = ConfigTree.set(current.root, ConfigPath.Root.key("rules"), kept)
+        applyEditedRoot(updatedRoot, "已删除 ${rules.size - kept.size} 条未上锁规则，保留 ${kept.size} 条")
+        val survivingLocked = kept.map { it.toString() }.toSet()
+        if (key != null) lockedStore.replace(key, survivingLocked)
+        _state.update { it.copy(lockedRules = survivingLocked) }
+    }
+
     fun validate() {
         val root = _state.value.root
         viewModelScope.launch {
@@ -178,16 +208,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _state.update { it.copy(isBusy = true, message = null) }
             val result = withContext(Dispatchers.Default) {
                 runCatching {
-                    val generated = RuleWizard.apply(MihomoYaml.dump(rootSnapshot), request)
-                    val root = MihomoYaml.parse(generated)
-                    Triple(generated, root, MihomoYaml.summarize(root))
+                    val newRoot = RuleWizard.apply(rootSnapshot, request)
+                    Triple(newRoot, MihomoYaml.summarize(newRoot), MihomoYaml.dump(newRoot))
                 }
             }
-            result.onSuccess { (generated, root, summary) ->
+            result.onSuccess { (newRoot, summary, text) ->
                 _state.update {
                     it.copy(
-                        text = generated,
-                        root = root,
+                        text = text,
+                        root = newRoot,
                         summary = summary,
                         parseError = null,
                         isDirty = true,
@@ -251,6 +280,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
             parsed.onSuccess { (root, summary) ->
+                val resolvedKey = uri?.toString() ?: "file:${profile.fileName}"
+                configKey = resolvedKey
+                val locked = lockedStore.load(resolvedKey)
                 _state.value = EditorState(
                     text = profile.text,
                     root = root,
@@ -259,6 +291,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     isDirty = uri == null,
                     summary = summary,
                     message = message ?: "已导入 ${profile.displayName}",
+                    lockedRules = locked,
                 )
             }.onFailure { error ->
                 _state.update {

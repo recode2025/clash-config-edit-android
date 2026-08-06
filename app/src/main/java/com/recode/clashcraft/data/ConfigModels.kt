@@ -31,6 +31,7 @@ data class EditorState(
     val parseError: String? = null,
     val summary: ConfigSummary = ConfigSummary(),
     val message: String? = null,
+    val lockedRules: Set<String> = emptySet(),
     val pendingImports: List<ImportedProfile> = emptyList(),
 )
 

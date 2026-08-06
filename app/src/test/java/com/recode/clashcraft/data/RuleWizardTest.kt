@@ -35,8 +35,8 @@ class RuleWizardTest {
 
     @Test
     fun insertsPackageAndDomainRulesBeforeMatchAndPreservesUnknownKeys() {
-        val output = RuleWizard.apply(
-            source,
+        val root = RuleWizard.apply(
+            MihomoYaml.parse(source),
             RuleWizardRequest(
                 packageNames = listOf("org.telegram.messenger"),
                 domains = listOf("https://telegram.org/path"),
@@ -49,7 +49,6 @@ class RuleWizardTest {
             ),
         )
 
-        val root = MihomoYaml.parse(output)
         val rules = root["rules"].asStringList()
         assertTrue(rules.indexOf("PROCESS-NAME,org.telegram.messenger,Telegram 自动") < rules.indexOf("MATCH,节点选择"))
         assertTrue(rules.contains("DOMAIN-SUFFIX,telegram.org,Telegram 自动"))

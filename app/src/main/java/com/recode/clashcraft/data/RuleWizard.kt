@@ -19,9 +19,9 @@ object RuleWizard {
     private val packagePattern = Regex("^[A-Za-z0-9_]+(?:\\.[A-Za-z0-9_]+)+$")
     private val domainPattern = Regex("^(?:\\*\\.)?[A-Za-z0-9一-龥_-]+(?:\\.[A-Za-z0-9一-龥_-]+)+$")
 
-    fun apply(source: String, request: RuleWizardRequest): String {
+    fun apply(source: Map<String, Any?>, request: RuleWizardRequest): LinkedHashMap<String, Any?> {
         validateRequest(request)
-        val root = MihomoYaml.parse(source)
+        val root = MihomoYaml.copy(source)
         val groups = root.getOrPutMutableList("proxy-groups")
         val parent = groups.mapNotNull { it as? MutableMap<String, Any?> }
             .firstOrNull { it["name"]?.toString() == request.parentGroupName }
@@ -77,7 +77,7 @@ object RuleWizard {
         }.let { if (it < 0) rules.size else it }
         rules.addAll(firstCatchAll, generatedRules)
 
-        return MihomoYaml.dump(root)
+        return root
     }
 
     private fun validateRequest(request: RuleWizardRequest) {

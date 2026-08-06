@@ -67,6 +67,11 @@ object MihomoYaml {
         )
     }
 
+    /** 深拷贝配置树，返回可变结构，供需要就地修改的流程（如 RuleWizard）复用，避免重复 dump/parse。 */
+    @Suppress("UNCHECKED_CAST")
+    internal fun copy(root: Map<String, Any?>): LinkedHashMap<String, Any?> =
+        mutableCopy(root) as LinkedHashMap<String, Any?>
+
     private fun mutableCopy(value: Any?): Any? = when (value) {
         is Map<*, *> -> linkedMapOf<String, Any?>().apply {
             value.forEach { (key, child) -> put(key.toString(), mutableCopy(child)) }

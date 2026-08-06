@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -23,9 +22,13 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
@@ -173,6 +176,8 @@ fun ClashCraftApp(
                         state = state,
                         onAddCustomRule = viewModel::addCustomRule,
                         onRemoveRule = viewModel::removeRule,
+                        onToggleLock = viewModel::toggleRuleLock,
+                        onDeleteUnlocked = viewModel::deleteUnlockedRules,
                         onApply = {
                             viewModel.applyWizard(it) { page = AppPage.CONFIG }
                         },
@@ -368,6 +373,8 @@ private fun RuleWizardView(
     state: EditorState,
     onAddCustomRule: (CustomRuleRequest) -> RuleAddResult,
     onRemoveRule: (Int) -> Unit,
+    onToggleLock: (String) -> Unit,
+    onDeleteUnlocked: () -> Unit,
     onApply: (RuleWizardRequest) -> Unit,
 ) {
     val groups = state.summary.groups
@@ -387,12 +394,17 @@ private fun RuleWizardView(
     var ruleStatus by rememberSaveable { mutableStateOf<String?>(null) }
     var showCustomRuleDialog by rememberSaveable { mutableStateOf(false) }
     var visibleRuleLimit by rememberSaveable { mutableStateOf(100) }
+    var showDeleteAllDialog by rememberSaveable { mutableStateOf(false) }
     val selected = remember { mutableStateListOf<String>() }
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
     val parent = groups.firstOrNull { it.name == parentName }
     val candidates = parent?.proxies.orEmpty().filterNot { it in setOf("DIRECT", "REJECT", "COMPATIBLE") }
     val rules = state.root["rules"] as? List<*> ?: emptyList<Any?>()
+    val lockedCount = remember(rules, state.lockedRules) {
+        rules.count { it.toString() in state.lockedRules }
+    }
+    val unlockedCount = rules.size - lockedCount
     val filteredRules = remember(rules, ruleSearch, visibleRuleLimit) {
         val query = ruleSearch.trim()
         rules.asSequence()
@@ -444,17 +456,25 @@ private fun RuleWizardView(
                     Text(it, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodySmall)
                 }
                 Text(
-                    if (ruleSearch.isBlank()) "共 ${rules.size} 条，当前显示 ${filteredRules.size} 条"
+                    if (ruleSearch.isBlank()) "共 ${rules.size} 条（已上锁 $lockedCount 条），当前显示 ${filteredRules.size} 条"
                     else "找到 ${filteredRules.size} 条匹配结果",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                OutlinedButton(
+                    onClick = { showDeleteAllDialog = true },
+                    enabled = unlockedCount > 0,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(if (unlockedCount > 0) "删除所有未上锁规则（$unlockedCount 条）" else "全部规则已上锁")
+                }
             }
         }
         if (filteredRules.isEmpty()) {
             item { InfoCard("没有匹配规则", if (rules.isEmpty()) "当前配置还没有 rules。" else "请更换搜索关键词。") }
         } else {
             items(filteredRules, key = { "${it.first}:${it.second}" }) { (originalIndex, rule) ->
+                val locked = rule in state.lockedRules
                 OutlinedCard(Modifier.fillMaxWidth()) {
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(14.dp),
@@ -463,6 +483,14 @@ private fun RuleWizardView(
                         Column(Modifier.weight(1f)) {
                             Text("第 ${originalIndex + 1} 条", style = MaterialTheme.typography.labelMedium)
                             Text(rule, style = MaterialTheme.typography.bodyMedium)
+                        }
+                        IconButton(onClick = { onToggleLock(rule) }) {
+                            Icon(
+                                imageVector = Icons.Filled.Lock,
+                                contentDescription = if (locked) "解锁规则" else "上锁规则",
+                                tint = if (locked) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
                         }
                         TextButton(onClick = { onRemoveRule(originalIndex) }) {
                             Text("删除", color = MaterialTheme.colorScheme.error)
@@ -699,6 +727,23 @@ private fun RuleWizardView(
                 }
                 showCustomRuleDialog = false
                 coroutineScope.launch { listState.animateScrollToItem(2) }
+            },
+        )
+    }
+
+    if (showDeleteAllDialog) {
+        AlertDialog(
+            onDismissRequest = { showDeleteAllDialog = false },
+            title = { Text("删除未上锁规则") },
+            text = { Text("将删除 $unlockedCount 条未上锁规则，保留 $lockedCount 条已上锁规则。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showDeleteAllDialog = false
+                    onDeleteUnlocked()
+                }) { Text("删除", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteAllDialog = false }) { Text("取消") }
             },
         )
     }
